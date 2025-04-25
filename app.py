@@ -155,8 +155,22 @@ def check_ip():
         logging.error(f"Error checking IP: {str(e)}")
         return f"Error: {str(e)}"
 
+def test_proxy(proxy_url):
+    """Test if proxy is working"""
+    try:
+        proxies = {
+            "http": proxy_url,
+            "https": proxy_url
+        }
+        response = requests.get("https://httpbin.org/ip", proxies=proxies, timeout=5)
+        if response.status_code == 200:
+            return True, response.json().get("origin", "Unknown")
+        return False, f"Status code: {response.status_code}"
+    except Exception as e:
+        return False, str(e)
+
 def fetch_page(url, proxy_url=None):
-    """Fetch webpage content using requests with proxy support"""
+    """Fetch webpage content using requests with proxy support and better error handling"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36"
     }
@@ -168,8 +182,22 @@ def fetch_page(url, proxy_url=None):
             "https": proxy_url
         }
     
+    # First try with proxy
+    if proxies:
+        try:
+            response = requests.get(url, headers=headers, proxies=proxies, timeout=15)
+            response.raise_for_status()
+            return response.text
+        except requests.exceptions.ProxyError as e:
+            st.warning(f"Proxy error: {str(e)}. Trying direct connection...")
+            # Fall back to direct connection
+        except Exception as e:
+            logging.error(f"Error fetching page with proxy: {str(e)}")
+            raise
+    
+    # Try direct connection if proxy fails or isn't provided
     try:
-        response = requests.get(url, headers=headers, proxies=proxies, timeout=15)
+        response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
         return response.text
     except Exception as e:
@@ -244,7 +272,24 @@ st.sidebar.title("⚙️ Settings")
 st.sidebar.header("Proxy Configuration")
 proxy_type = st.sidebar.selectbox("Proxy Type", ["HTTP", "SOCKS5"], index=0)
 proxy_host = st.sidebar.text_input("Proxy Host", value="public-vpn-57.opengw.net")
-proxy_port = st.sidebar.text_input("Proxy Port", value="80")
+
+# Port selection with common options
+common_ports = ["80", "8080", "3128", "1080", "8888"]
+proxy_port = st.sidebar.selectbox(
+    "Proxy Port", 
+    options=common_ports, 
+    index=0,
+    help="Common HTTP proxy ports: 80, 8080, 3128; Common SOCKS ports: 1080"
+)
+
+# Custom port option
+use_custom_port = st.sidebar.checkbox("Use custom port")
+custom_port = None
+if use_custom_port:
+    custom_port = st.sidebar.text_input("Custom Port")
+    if custom_port and custom_port.isdigit():
+        proxy_port = custom_port
+
 proxy_user = st.sidebar.text_input("Username (optional)", value="vpn")
 proxy_pass = st.sidebar.text_input("Password (optional)", value="vpn", type="password")
 
@@ -257,12 +302,39 @@ if st.sidebar.button("Save Proxy Settings"):
     
     # Store in session state
     st.session_state['proxy_url'] = proxy_url
-    st.sidebar.success(f"✅ Proxy settings saved!")
+    st.sidebar.success(f"✅ Proxy settings saved: {proxy_type}://{proxy_host}:{proxy_port}")
+
+# Test Proxy Button
+if st.sidebar.button("Test Proxy Connection"):
+    if 'proxy_url' not in st.session_state:
+        st.sidebar.warning("⚠️ Please save your proxy settings first!")
+    else:
+        proxy_url = st.session_state.get('proxy_url')
+        st.sidebar.info(f"Testing connection to: {proxy_url}")
+        success, result = test_proxy(proxy_url)
+        if success:
+            st.sidebar.success(f"✅ Proxy working! IP: {result}")
+        else:
+            st.sidebar.error(f"❌ Proxy not working: {result}")
 
 # Check IP Button
 if st.sidebar.button("Check Current IP"):
     ip = check_ip()
     st.sidebar.info(f"Current IP: {ip}")
+
+# List of alternative proxy servers
+st.sidebar.subheader("Alternative Proxy Servers")
+st.sidebar.markdown("""
+Try these if the current one isn't working:
+- free-proxy.cz
+- proxy-list.download
+- openproxy.space
+- spys.one
+
+Remember to test different ports:
+- HTTP: 80, 8080, 3128
+- SOCKS: 1080, 1081
+""")
 
 # Scraper Settings
 st.sidebar.header("Scraper Settings")
@@ -285,7 +357,7 @@ else:
     st.markdown("""
     1. **Configure proxy settings** in the sidebar
     2. Click **Save Proxy Settings** to apply them
-    3. Verify your connection with **Check Current IP**
+    3. Test your proxy with **Test Proxy Connection**
     4. Finally, click **Start Scraping** to begin monitoring live football matches
     """)
-    st.warning("Note: This application uses proxy services to access geo-restricted content. Please ensure your proxy settings are correct.")
+    st.warning("Note: This application uses proxy services to access geo-restricted content. If one proxy doesn't work, try another server or port.")
