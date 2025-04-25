@@ -1,13 +1,7 @@
-import time, hashlib, json, logging, os
+import time, hashlib, json, logging
 from collections import defaultdict
 from bs4 import BeautifulSoup
 import streamlit as st
-import selenium.webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 import requests
 
 # Configure logging
@@ -150,25 +144,6 @@ def display_matches(matches):
                 # Update previous match
                 previous_matches[match_id] = match
 
-def setup_chrome_options():
-    """Set up Chrome options for headless browser with proxy settings"""
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
-    
-    # Get proxy settings from Streamlit secrets
-    if 'PROXY_URL' in st.secrets:
-        proxy_url = st.secrets['PROXY_URL']
-        chrome_options.add_argument(f"--proxy-server={proxy_url}")
-        logging.info("Using configured proxy server from secrets")
-    
-    # Add user agent to help avoid detection
-    chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36")
-    
-    return chrome_options
-
 def check_ip():
     """Check current IP address"""
     try:
@@ -180,6 +155,27 @@ def check_ip():
         logging.error(f"Error checking IP: {str(e)}")
         return f"Error: {str(e)}"
 
+def fetch_page(url, proxy_url=None):
+    """Fetch webpage content using requests with proxy support"""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36"
+    }
+    
+    proxies = None
+    if proxy_url:
+        proxies = {
+            "http": proxy_url,
+            "https": proxy_url
+        }
+    
+    try:
+        response = requests.get(url, headers=headers, proxies=proxies, timeout=15)
+        response.raise_for_status()
+        return response.text
+    except Exception as e:
+        logging.error(f"Error fetching page: {str(e)}")
+        raise
+
 def start_scraper(url, interval=60):
     """Start the web scraper with error handling and retry mechanism"""
     status_placeholder.info("🔄 Starting the scraper...")
@@ -188,14 +184,10 @@ def start_scraper(url, interval=60):
     current_ip = check_ip()
     status_placeholder.info(f"Current IP: {current_ip}")
     
+    # Get proxy URL from session state
+    proxy_url = st.session_state.get('proxy_url')
+    
     try:
-        chrome_options = setup_chrome_options()
-        
-        # Use Service object to specify chromedriver path if needed
-        service = Service()
-        driver = selenium.webdriver.Chrome(service=service, options=chrome_options)
-        
-        status_placeholder.success("✅ Browser initialized successfully!")
         last_hash = ""
         error_count = 0
         
@@ -204,16 +196,11 @@ def start_scraper(url, interval=60):
                 # Update status
                 status_placeholder.info(f"🔄 Fetching data from {url}...")
                 
-                # Load the URL
-                driver.get(url)
-                
-                # Wait for the content to load
-                WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "div.sport-events-container"))
-                )
+                # Fetch the page
+                html_content = fetch_page(url, proxy_url)
                 
                 # Parse the page
-                soup = BeautifulSoup(driver.page_source, "html.parser")
+                soup = BeautifulSoup(html_content, "html.parser")
                 matches = extract_match_data(soup)
                 current_hash = hash_data(matches)
 
@@ -235,11 +222,10 @@ def start_scraper(url, interval=60):
                 status_placeholder.warning(error_message)
                 logging.warning(error_message)
                 
-                # If too many consecutive errors, restart the browser
+                # If too many consecutive errors, wait longer
                 if error_count > 3:
-                    status_placeholder.error("🔄 Too many errors, restarting browser...")
-                    driver.quit()
-                    driver = selenium.webdriver.Chrome(service=service, options=chrome_options)
+                    status_placeholder.error("🔄 Too many errors, waiting longer before retry...")
+                    time.sleep(interval * 2)
                     error_count = 0
 
             # Wait before the next update
@@ -248,11 +234,6 @@ def start_scraper(url, interval=60):
     except Exception as e:
         status_placeholder.error(f"❌ Fatal error: {str(e)}")
         logging.error(f"Fatal error: {e}")
-    finally:
-        try:
-            driver.quit()
-        except:
-            pass
 
 # --- Main App UI ---
 
@@ -295,7 +276,10 @@ url = st.sidebar.text_input("URL to scrape",
                           value="https://sports.williamhill.com/betting/en-gb/in-play/all")
 
 if st.sidebar.button("Start Scraping"):
-    start_scraper(url, interval=update_interval)
+    if 'proxy_url' not in st.session_state:
+        st.warning("⚠️ Please save your proxy settings first!")
+    else:
+        start_scraper(url, interval=update_interval)
 else:
     st.info("Follow these steps to begin:")
     st.markdown("""
