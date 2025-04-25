@@ -1,21 +1,24 @@
-import time, hashlib, json, logging
+import time, hashlib, json, logging, os
 from collections import defaultdict
 from bs4 import BeautifulSoup
-# import undetected_chromedriver as uc
-# from selenium.webdriver.common.by import By
-# from selenium.webdriver.support.ui import WebDriverWait
-# from selenium.webdriver.support import expected_conditions as EC
 import streamlit as st
+import selenium.webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import requests
 
-
-
+# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 
 def hash_data(data):
+    """Generate a hash from the data to detect changes"""
     return hashlib.md5(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 def extract_match_data(soup):
+    """Extract match data from the HTML"""
     events = soup.select("div.event")
     matches = []
     for event in events:
@@ -57,12 +60,13 @@ def extract_match_data(soup):
         })
     return matches
 
-# --- Streamlit App ---
-
+# --- Streamlit App Configuration ---
 st.set_page_config(layout="wide")
-st.title("⚽ Football Live status")
+st.title("⚽ Football Live Status")
 
+# Create placeholders
 placeholder = st.empty()
+status_placeholder = st.empty()
 
 # Add blinking CSS
 st.markdown("""
@@ -88,6 +92,7 @@ st.markdown("""
 previous_matches = {}
 
 def display_matches(matches):
+    """Display matches in the Streamlit UI"""
     global previous_matches
 
     grouped = defaultdict(list)
@@ -145,62 +150,158 @@ def display_matches(matches):
                 # Update previous match
                 previous_matches[match_id] = match
 
-def start_scraper(url, interval=1):
-    # options = uc.ChromeOptions()
-    # options.headless = True
-    # options.add_argument("--no-sandbox")
-    # options.add_argument("--disable-gpu")
-    # driver = uc.Chrome(options=options)
-    # driver.get(url)
-    response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
-    soup = BeautifulSoup(response.text, "html.parser")
-    matches = extract_match_data(soup)
-    display_matches(matches)
+def setup_chrome_options():
+    """Set up Chrome options for headless browser with proxy settings"""
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    
+    # Get proxy settings from Streamlit secrets
+    if 'PROXY_URL' in st.secrets:
+        proxy_url = st.secrets['PROXY_URL']
+        chrome_options.add_argument(f"--proxy-server={proxy_url}")
+        logging.info("Using configured proxy server from secrets")
+    
+    # Add user agent to help avoid detection
+    chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36")
+    
+    return chrome_options
 
-    last_hash = ""
+def check_ip():
+    """Check current IP address"""
+    try:
+        response = requests.get('https://api.ipify.org?format=json', timeout=5)
+        if response.status_code == 200:
+            return response.json().get('ip', 'Unknown')
+        return 'Error'
+    except Exception as e:
+        logging.error(f"Error checking IP: {str(e)}")
+        return f"Error: {str(e)}"
 
-    # try:
-    #     while True:
-    #         try:
-    #             WebDriverWait(driver, 1).until(
-    #                 EC.presence_of_element_located((By.CSS_SELECTOR, "div.sport-events-container"))
-    #             )
-    #             soup = BeautifulSoup(driver.page_source, "html.parser")
-    #             matches = extract_match_data(soup)
-    #             current_hash = hash_data(matches)
+def start_scraper(url, interval=60):
+    """Start the web scraper with error handling and retry mechanism"""
+    status_placeholder.info("🔄 Starting the scraper...")
+    
+    # Check IP before starting
+    current_ip = check_ip()
+    status_placeholder.info(f"Current IP: {current_ip}")
+    
+    try:
+        chrome_options = setup_chrome_options()
+        
+        # Use Service object to specify chromedriver path if needed
+        service = Service()
+        driver = selenium.webdriver.Chrome(service=service, options=chrome_options)
+        
+        status_placeholder.success("✅ Browser initialized successfully!")
+        last_hash = ""
+        error_count = 0
+        
+        while True:
+            try:
+                # Update status
+                status_placeholder.info(f"🔄 Fetching data from {url}...")
+                
+                # Load the URL
+                driver.get(url)
+                
+                # Wait for the content to load
+                WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "div.sport-events-container"))
+                )
+                
+                # Parse the page
+                soup = BeautifulSoup(driver.page_source, "html.parser")
+                matches = extract_match_data(soup)
+                current_hash = hash_data(matches)
 
-    #             if current_hash != last_hash:
-    #                 display_matches(matches)
-    #                 last_hash = current_hash
-    #                 logging.info("🔄 UI updated.")
-    #             else:
-    #                 logging.info("⏳ No changes.")
-    #         except Exception as e:
-    #             st.warning(f"⚠️ Scrape error: {e}")
-    #             logging.warning(f"⚠️ Scrape error: {e}")
+                if current_hash != last_hash:
+                    status_placeholder.success(f"✅ Data updated at {time.strftime('%H:%M:%S')}")
+                    display_matches(matches)
+                    last_hash = current_hash
+                    logging.info("🔄 UI updated.")
+                else:
+                    status_placeholder.info(f"⏳ No changes detected at {time.strftime('%H:%M:%S')}")
+                    logging.info("⏳ No changes.")
+                
+                # Reset error count on successful execution
+                error_count = 0
+                
+            except Exception as e:
+                error_count += 1
+                error_message = f"⚠️ Scrape error ({error_count}): {str(e)}"
+                status_placeholder.warning(error_message)
+                logging.warning(error_message)
+                
+                # If too many consecutive errors, restart the browser
+                if error_count > 3:
+                    status_placeholder.error("🔄 Too many errors, restarting browser...")
+                    driver.quit()
+                    driver = selenium.webdriver.Chrome(service=service, options=chrome_options)
+                    error_count = 0
 
-    #         time.sleep(interval)
+            # Wait before the next update
+            time.sleep(interval)
 
-    # finally:
-    #     driver.quit()
-    while True:
+    except Exception as e:
+        status_placeholder.error(f"❌ Fatal error: {str(e)}")
+        logging.error(f"Fatal error: {e}")
+    finally:
         try:
-            response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
-            soup = BeautifulSoup(response.text, "html.parser")
-            matches = extract_match_data(soup)
-            current_hash = hash_data(matches)
+            driver.quit()
+        except:
+            pass
 
-            if current_hash != last_hash:
-                display_matches(matches)
-                last_hash = current_hash
-                logging.info("🔄 UI updated.")
-            else:
-                logging.info("⏳ No changes.")
-        except Exception as e:
-            st.warning(f"⚠️ Scrape error: {e}")
-            logging.warning(f"⚠️ Scrape error: {e}")
+# --- Main App UI ---
 
-        time.sleep(interval)
+# Sidebar Configuration
+st.sidebar.title("⚙️ Settings")
 
-# Start scraper
-start_scraper("https://sports.williamhill.com/betting/en-gb/in-play/all", interval=1)
+# Proxy Configuration
+st.sidebar.header("Proxy Configuration")
+proxy_type = st.sidebar.selectbox("Proxy Type", ["HTTP", "SOCKS5"], index=0)
+proxy_host = st.sidebar.text_input("Proxy Host", value="public-vpn-57.opengw.net")
+proxy_port = st.sidebar.text_input("Proxy Port", value="80")
+proxy_user = st.sidebar.text_input("Username (optional)", value="vpn")
+proxy_pass = st.sidebar.text_input("Password (optional)", value="vpn", type="password")
+
+# Build proxy URL
+if st.sidebar.button("Save Proxy Settings"):
+    if proxy_user and proxy_pass:
+        proxy_url = f"{proxy_type.lower()}://{proxy_user}:{proxy_pass}@{proxy_host}:{proxy_port}"
+    else:
+        proxy_url = f"{proxy_type.lower()}://{proxy_host}:{proxy_port}"
+    
+    # Store in session state
+    st.session_state['proxy_url'] = proxy_url
+    st.sidebar.success(f"✅ Proxy settings saved!")
+
+# Check IP Button
+if st.sidebar.button("Check Current IP"):
+    ip = check_ip()
+    st.sidebar.info(f"Current IP: {ip}")
+
+# Scraper Settings
+st.sidebar.header("Scraper Settings")
+update_interval = st.sidebar.slider("Update interval (seconds)", 
+                                  min_value=30, 
+                                  max_value=300, 
+                                  value=60,
+                                  step=10)
+
+url = st.sidebar.text_input("URL to scrape", 
+                          value="https://sports.williamhill.com/betting/en-gb/in-play/all")
+
+if st.sidebar.button("Start Scraping"):
+    start_scraper(url, interval=update_interval)
+else:
+    st.info("Follow these steps to begin:")
+    st.markdown("""
+    1. **Configure proxy settings** in the sidebar
+    2. Click **Save Proxy Settings** to apply them
+    3. Verify your connection with **Check Current IP**
+    4. Finally, click **Start Scraping** to begin monitoring live football matches
+    """)
+    st.warning("Note: This application uses proxy services to access geo-restricted content. Please ensure your proxy settings are correct.")
