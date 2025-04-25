@@ -6,6 +6,9 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import streamlit as st
+import requests
+
+
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 
@@ -143,39 +146,61 @@ def display_matches(matches):
                 previous_matches[match_id] = match
 
 def start_scraper(url, interval=1):
-    options = uc.ChromeOptions()
-    options.headless = True
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-gpu")
-    driver = uc.Chrome(options=options)
-    driver.get(url)
+    # options = uc.ChromeOptions()
+    # options.headless = True
+    # options.add_argument("--no-sandbox")
+    # options.add_argument("--disable-gpu")
+    # driver = uc.Chrome(options=options)
+    # driver.get(url)
+    response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
+    soup = BeautifulSoup(response.text, "html.parser")
+    matches = extract_match_data(soup)
+    display_matches(matches)
 
     last_hash = ""
 
-    try:
-        while True:
-            try:
-                WebDriverWait(driver, 1).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "div.sport-events-container"))
-                )
-                soup = BeautifulSoup(driver.page_source, "html.parser")
-                matches = extract_match_data(soup)
-                current_hash = hash_data(matches)
+    # try:
+    #     while True:
+    #         try:
+    #             WebDriverWait(driver, 1).until(
+    #                 EC.presence_of_element_located((By.CSS_SELECTOR, "div.sport-events-container"))
+    #             )
+    #             soup = BeautifulSoup(driver.page_source, "html.parser")
+    #             matches = extract_match_data(soup)
+    #             current_hash = hash_data(matches)
 
-                if current_hash != last_hash:
-                    display_matches(matches)
-                    last_hash = current_hash
-                    logging.info("🔄 UI updated.")
-                else:
-                    logging.info("⏳ No changes.")
-            except Exception as e:
-                st.warning(f"⚠️ Scrape error: {e}")
-                logging.warning(f"⚠️ Scrape error: {e}")
+    #             if current_hash != last_hash:
+    #                 display_matches(matches)
+    #                 last_hash = current_hash
+    #                 logging.info("🔄 UI updated.")
+    #             else:
+    #                 logging.info("⏳ No changes.")
+    #         except Exception as e:
+    #             st.warning(f"⚠️ Scrape error: {e}")
+    #             logging.warning(f"⚠️ Scrape error: {e}")
 
-            time.sleep(interval)
+    #         time.sleep(interval)
 
-    finally:
-        driver.quit()
+    # finally:
+    #     driver.quit()
+    while True:
+        try:
+            response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
+            soup = BeautifulSoup(response.text, "html.parser")
+            matches = extract_match_data(soup)
+            current_hash = hash_data(matches)
+
+            if current_hash != last_hash:
+                display_matches(matches)
+                last_hash = current_hash
+                logging.info("🔄 UI updated.")
+            else:
+                logging.info("⏳ No changes.")
+        except Exception as e:
+            st.warning(f"⚠️ Scrape error: {e}")
+            logging.warning(f"⚠️ Scrape error: {e}")
+
+        time.sleep(interval)
 
 # Start scraper
 start_scraper("https://sports.williamhill.com/betting/en-gb/in-play/all", interval=1)
